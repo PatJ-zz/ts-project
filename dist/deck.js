@@ -38,6 +38,7 @@ const readline = __importStar(require("readline"));
 class DeckSimulator {
     constructor() {
         this.FANCY = false;
+        this.LARGE_CARDS = false;
         this.DISCARD_DRAW = true;
         this.interactive = true;
         this.SILENT_MODE = true;
@@ -52,7 +53,31 @@ class DeckSimulator {
         this.green = "\u001B[32m";
         this.reset = "\u001B[0m";
     }
+    parseArgs() {
+        for (const arg of process.argv.slice(2)) {
+            switch (arg) {
+                case "--large":
+                case "--large-cards":
+                case "--big":
+                    this.FANCY = true;
+                    this.LARGE_CARDS = true;
+                    break;
+                case "--fancy":
+                    this.FANCY = true;
+                    this.LARGE_CARDS = false;
+                    break;
+                case "--plain":
+                    this.FANCY = false;
+                    this.LARGE_CARDS = false;
+                    break;
+                default:
+                    console.warn(`Unknown option: ${arg}`);
+                    console.warn("Usage: ts-node deck.ts [--plain | --fancy | --large]");
+            }
+        }
+    }
     async main() {
+        this.parseArgs();
         // Handle Ctrl+C properly
         process.on("SIGINT", () => {
             process.stdin.setRawMode(false);
@@ -168,22 +193,20 @@ class DeckSimulator {
                         }
                         console.log(`\n🃏 Hand type: ${this.evaluatePokerHand(hand)}`);
                     }
-                    result = this.evaluatePokerHand(hand);
-                    const payout = this.getPayout(result);
-                    const winAmount = payout * this.currentBet;
-                    if (this.interactive && !(this.highlow && payout > 0)) {
-                        await this.waitForKeyPress("Press any key to deal the next hand...");
-                    }
-                    this.balance -= this.currentBet;
-                    this.balance += winAmount;
-                    console.log(`\n💰 Hand result: ${winAmount - this.currentBet >= 0 ? `+${winAmount - this.currentBet}` : `${winAmount - this.currentBet}`} (payout: ${payout}x)`);
-                    console.log(`💳 Balance: ${this.balance}`);
-                    if (this.interactive && this.highlow && payout > 0) {
-                        await this.promptForHighLowGamble(winAmount);
-                    }
                 }
-                else {
-                    result = beforeResult;
+                // Settle the bet whether or not cards were drawn
+                result = this.evaluatePokerHand(hand);
+                const payout = this.getPayout(result);
+                const winAmount = payout * this.currentBet;
+                if (this.interactive && !(this.highlow && payout > 0)) {
+                    await this.waitForKeyPress("Press any key to deal the next hand...");
+                }
+                this.balance -= this.currentBet;
+                this.balance += winAmount;
+                console.log(`\n💰 Hand result: ${winAmount - this.currentBet >= 0 ? `+${winAmount - this.currentBet}` : `${winAmount - this.currentBet}`} (payout: ${payout}x)`);
+                console.log(`💳 Balance: ${this.balance}`);
+                if (this.interactive && this.highlow && payout > 0) {
+                    await this.promptForHighLowGamble(winAmount);
                 }
             }
             if (!firstOccurrence.has(result)) {
@@ -435,6 +458,10 @@ class DeckSimulator {
         return missing.join(", ");
     }
     printFancyCards(cards) {
+        if (this.LARGE_CARDS) {
+            this.printLargeCards(cards);
+            return;
+        }
         if (cards.length === 0)
             return;
         // Top border
@@ -497,6 +524,54 @@ class DeckSimulator {
                 process.stdout.write(" ");
         }
         console.log();
+    }
+    getCardColor(card) {
+        if (card === "WC")
+            return this.green;
+        if (card.includes("\u2665") || card.includes("\u2666"))
+            return this.red;
+        return "";
+    }
+    getCardLabel(card) {
+        return card === "WC" ? "WC" : card.substring(0, card.length - 1);
+    }
+    getCardDisplayWidth() {
+        return this.LARGE_CARDS ? 13 : 5;
+    }
+    printLargeCards(cards) {
+        if (cards.length === 0)
+            return;
+        const innerWidth = 11;
+        const horizontal = "─".repeat(innerWidth);
+        const topBorder = cards.map(() => `┌${horizontal}┐`).join(" ");
+        const bottomBorder = cards.map(() => `└${horizontal}┘`).join(" ");
+        const blankLine = cards.map(() => `│${" ".repeat(innerWidth)}│`).join(" ");
+        console.log(topBorder);
+        // Top-left rank row
+        const topRow = cards.map((card) => {
+            const label = this.getCardLabel(card);
+            const content = ` ${label}${" ".repeat(innerWidth - label.length - 1)}`;
+            return `│${this.getCardColor(card)}${content}${this.reset}│`;
+        }).join(" ");
+        console.log(topRow);
+        console.log(blankLine);
+        // Centered suit row
+        const centerRow = cards.map((card) => {
+            const symbol = card === "WC" ? "★" : card.charAt(card.length - 1);
+            const leftPad = Math.floor((innerWidth - symbol.length) / 2);
+            const rightPad = innerWidth - symbol.length - leftPad;
+            return `│${" ".repeat(leftPad)}${this.getCardColor(card)}${symbol}${this.reset}${" ".repeat(rightPad)}│`;
+        }).join(" ");
+        console.log(centerRow);
+        console.log(blankLine);
+        // Bottom-right rank row
+        const bottomRow = cards.map((card) => {
+            const label = this.getCardLabel(card);
+            const content = `${" ".repeat(innerWidth - label.length - 1)}${label} `;
+            return `│${this.getCardColor(card)}${content}${this.reset}│`;
+        }).join(" ");
+        console.log(bottomRow);
+        console.log(bottomBorder);
     }
     getAutoDiscardIndices(hand, currentHandType, foundHandTypes, allHandTypes) {
         const toDiscard = [];
@@ -704,11 +779,13 @@ class DeckSimulator {
                 console.log(`Bet: ${this.currentBet}   Balance: ${this.balance}`);
                 if (this.FANCY) {
                     this.printFancyCards(hand);
-                    // Align card labels with fancy cards, one card box equals 5 columns plus one separator.
+                    // Align card labels with the rendered card width, plus one separator.
+                    const cardWidth = this.getCardDisplayWidth();
                     for (let i = 0; i < hand.length; i++) {
                         const status = held.has(i) ? "✓" : (i + 1).toString();
-                        const padded = status.length === 1 ? `  ${status}  ` : ` ${status}  `;
-                        process.stdout.write(padded);
+                        const leftPad = Math.floor((cardWidth - status.length) / 2);
+                        const rightPad = cardWidth - status.length - leftPad;
+                        process.stdout.write(`${" ".repeat(leftPad)}${status}${" ".repeat(rightPad)}`);
                         if (i < hand.length - 1)
                             process.stdout.write(" ");
                     }
@@ -826,6 +903,8 @@ class DeckSimulator {
             const nextRank = this.rankToValue(nextCard.substring(0, nextCard.length - 1));
             cardSeq.push(nextCard);
             const won = this.isHighLowGuessCorrect(currentRank, nextRank, guess);
+            console.log(`\n🂠 Cards: ${cardSeq.map(c => this.formatCard(c)).join('')}`);
+            console.log(`🎴 You drew: ${this.formatCard(nextCard)}`);
             if (!won) {
                 this.balance -= currentStake;
                 console.log(`\n❌ Wrong. You lost ${currentStake}.`);
@@ -834,7 +913,6 @@ class DeckSimulator {
             }
             this.balance += currentStake;
             currentStake *= 2;
-            console.log(`\n🂠 Cards: ${cardSeq.map(c => this.formatCard(c)).join('')}`);
             console.log(`\n✅ Correct! Your gamble doubled to ${currentStake}.`);
             console.log(`💳 Balance: ${this.balance}`);
             currentCard = nextCard;
